@@ -4,6 +4,8 @@ from bayesmark.abstract_optimizer import AbstractOptimizer
 from bayesmark.experiment import experiment_main
 
 import numpy as np
+from scipy.stats import norm
+from scipy.optimize import minimize
 
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import Matern
@@ -90,13 +92,36 @@ class OurOptimizer(AbstractOptimizer):
             function. Each suggestion is a dictionary where each key
             corresponds to a parameter being optimized.
         """
-        N = 30
-        x_guess = rs.suggest_dict([], [], self.api_config, n_suggestions=N*n_suggestions,)# random=self.random)
-        x_guess_p = [self.process(x) for x in x_guess]
-        y_guess = self.meta_model.predict(x_guess_p)
-        best_idx = np.argsort(y_guess)[:n_suggestions]
-        x_guess = [x_guess[i] for i in best_idx]
-        return x_guess
+        # N = 30
+        # x_guess = rs.suggest_dict([], [], self.api_config, n_suggestions=N*n_suggestions,)# random=self.random)
+        # x_guess_p = [self.process(x) for x in x_guess]
+        # y_guess = self.meta_model.predict(x_guess_p)
+        # best_idx = np.argsort(y_guess)[:n_suggestions]
+        # x_guess = [x_guess[i] for i in best_idx]
+        # return x_guess
+        ################################
+        xi = 0.01  # Exploration-exploitation trade-off parameter
+        best_y = min(self.y, default=0)  # Best observed value
+
+        def acquisition_function(x):
+            x = np.array(x).reshape(1, -1)
+            mu, sigma = self.meta_model.predict(x, return_std=True)
+            z = (mu - best_y - xi) / sigma
+            return -(mu - best_y - xi) * norm.cdf(z) + sigma * norm.pdf(z)
+
+        # Initialize with random search
+        x_guess = rs.suggest_dict([], [], self.api_config, n_suggestions=n_suggestions)
+
+        # Optimize acquisition function
+        bounds = self.get_bounds()
+        for i in range(n_suggestions):
+            res = minimize(lambda x: -acquisition_function(x),
+                           x0=x_guess[i], bounds=bounds, method='L-BFGS-B')
+            x_guess[i] = res.x
+
+        # Convert back to dict format
+        x_guess_dicts = [self.convert_to_dict(x) for x in x_guess]
+        return x_guess_dicts
 
 
     def observe(self, X, y):
@@ -113,6 +138,33 @@ class OurOptimizer(AbstractOptimizer):
         """
         X_p = [self.process(x) for x in X]
         self.meta_model.fit(X_p, y)
+
+    def get_bounds(self):
+        bounds = []
+        for _, configs in self.api_config.items():
+            if configs['type'] in ['int', 'real']:
+                # For numerical types, use the provided range
+                bound = configs['range']
+            elif configs['type'] == 'bool':
+                # For boolean, the range is [0, 1]
+                bound = (0, 1)
+            elif configs['type'] == 'cat':
+                # For categorical, use index range
+                bound = (0, len(configs['values']) - 1)
+            bounds.append(bound)
+        return bounds
+    
+    def convert_to_dict(self, x_array):
+        x_dict = {}
+        for i, (feature, configs) in enumerate(self.api_config.items()):
+            value = x_array[i]
+            if configs['type'] == 'bool':
+                x_dict[feature] = bool(round(value))
+            elif configs['type'] == 'cat':
+                x_dict[feature] = configs['values'][int(round(value))]
+            elif configs['type'] in ['int', 'real']:
+                x_dict[feature] = value
+        return x_dict
 
 
 if __name__ == "__main__":
