@@ -31,7 +31,6 @@ class OurOptimizer(AbstractOptimizer):
         self.api_config = api_config
         self.X = np.empty((0, len(api_config)))  # Storing input points
         self.y = np.empty((0, 1)) 
-        self.lb, self.ub = self.extract_bounds(api_config)
 
         self.preprocessor_dict = self.build_preprocessor(api_config)
 
@@ -60,11 +59,9 @@ class OurOptimizer(AbstractOptimizer):
                 if 'range' in api_config[feature]:
                     min_val, max_val = api_config[feature]['range']
                     if api_config[feature]['space'] == 'log':
-                        min_val = np.log10(min_val)
-                        max_val = np.log10(max_val)
-                        processing_dict[feature] =  lambda x: self.min_max_processing(min_val, max_val)(np.log10(x))
+                        processing_dict[feature] =  self.log_min_max_processing(min_val, max_val)
                     else:
-                        processing_dict[feature] =  self.min_max_processing(min_val, max_val)
+                        processing_dict[feature] = self.min_max_processing(min_val, max_val)
 
                 else:
                     processing_dict[feature] = lambda x: x
@@ -79,6 +76,11 @@ class OurOptimizer(AbstractOptimizer):
     def min_max_processing(self, min_val, max_val):
         def process(x):
             return (x - min_val) / (max_val - min_val)
+        return process
+    
+    def log_min_max_processing(self, min_val, max_val):
+        def process(x):
+            return (np.log10(x) - np.log10(min_val)) / (np.log10(max_val) - np.log10(min_val))
         return process
 
     def suggest(self, n_suggestions=1):
@@ -98,13 +100,11 @@ class OurOptimizer(AbstractOptimizer):
         """
         if len(self.X) > 0 and len(self.y) > 0:
             # Sample new points using MCMC after at least one observation
-            sampled_points = self.mcmc_sample(n_suggestions)
-            next_guess = [self.convert_to_dict(point) for point in sampled_points]
+            next_guess = self.mcmc_sample(n_suggestions)
         else:
             # Use a random initialization strategy for the first suggestion
-            next_guess = self.random_initialization(n_suggestions)
+            next_guess = rs.suggest_dict([], [], self.api_config, n_suggestions=n_suggestions,)
         return next_guess
-
 
     def observe(self, X, y):
         """Feed an observation back.
@@ -126,23 +126,12 @@ class OurOptimizer(AbstractOptimizer):
             self.meta_model.fit(self.X, self.y)
             
     def mcmc_sample(self, n_suggestions):
-        # Start from a random point
-        current_point = np.random.uniform(self.lb, self.ub)
-        current_ei = self.expected_improvement(current_point.reshape(1, -1))
-
-        samples = [current_point]
-        for _ in range(n_suggestions - 1):
-            # Propose a new point
-            new_point = np.random.uniform(self.lb, self.ub)
-            new_ei = self.expected_improvement(new_point.reshape(1, -1))
-
-            # Accept new point with probability min(1, new_ei/current_ei)
-            if new_ei > current_ei or np.random.uniform(0, 1) < new_ei / current_ei:
-                current_point, current_ei = new_point, new_ei
-
-            samples.append(current_point)
-
-        return np.array(samples)
+        N = 10
+        candidates = rs.suggest_dict([], [], self.api_config, n_suggestions=max(1000, N*n_suggestions))
+        X = np.array([self.process(c) for c in candidates])
+        ei_list = self.expected_improvement(X)
+        best = np.argsort(ei_list)[:n_suggestions]
+        return [candidates[i] for i in best]
 
     def expected_improvement(self, X, xi=0.01):
         mu, sigma = self.meta_model.predict(X, return_std=True)
@@ -151,39 +140,12 @@ class OurOptimizer(AbstractOptimizer):
         mu_sample_opt = np.max(mu_sample)
 
         with np.errstate(divide='warn'):
-            imp = mu - mu_sample_opt - xi
-            Z = imp / sigma
-            ei = imp * norm.cdf(Z) + sigma * norm.pdf(Z)
+            gamma = (mu_sample_opt - mu)/sigma
+            ei = sigma*(gamma*norm.cdf(gamma) + norm.pdf(gamma))
             ei[sigma == 0.0] = 0.0
 
         return ei
     
-    def random_initialization(self, n_suggestions):
-        # Randomly sample points within the bounds
-        random_points = np.random.uniform(self.lb, self.ub, (n_suggestions, len(self.api_config)))
-        return [self.convert_to_dict(point) for point in random_points]
-
-    def convert_to_dict(self, point):
-        # Convert a point from array format to dictionary format
-        return {feature: point[i] for i, feature in enumerate(self.api_config)}
-    
-    def extract_bounds(self, api_config):
-        lb = []
-        ub = []
-        for feature, config in api_config.items():
-            if config['type'] in ['int', 'real']:
-                f_lb, f_ub = config['range']
-                lb.append(f_lb)
-                ub.append(f_ub)
-            elif config['type'] == 'bool':
-                lb.append(0)
-                ub.append(1)
-            elif config['type'] == 'cat':
-                lb.append(0)
-                ub.append(len(config['values']) - 1)
-            else:
-                raise ValueError(f"Unsupported type: {config['type']}")
-        return np.array(lb), np.array(ub)
 
 if __name__ == "__main__":
     experiment_main(OurOptimizer)
