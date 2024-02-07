@@ -130,7 +130,7 @@ class OurOptimizer(AbstractOptimizer):
         candidates = rs.suggest_dict([], [], self.api_config, n_suggestions=max(1000, N*n_suggestions))
         X = np.array([self.process(c) for c in candidates])
         ei_list = self.expected_improvement(X)
-        best = np.argsort(ei_list)[:n_suggestions]
+        best = np.argsort(ei_list)[-n_suggestions:]
         return [candidates[i] for i in best]
 
     def expected_improvement(self, X, xi=0.01):
