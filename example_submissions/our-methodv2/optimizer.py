@@ -127,7 +127,8 @@ class OurOptimizer(AbstractOptimizer):
             
     def mcmc_sample(self, n_suggestions):
         N = 10
-        candidates = rs.suggest_dict([], [], self.api_config, n_suggestions=max(1000, N*n_suggestions))
+        M = 1000
+        candidates = rs.suggest_dict([], [], self.api_config, n_suggestions=max(M, N*n_suggestions))
         X = np.array([self.process(c) for c in candidates])
         ei_list = self.expected_improvement(X)
         best = np.argsort(ei_list)[-n_suggestions:]
