@@ -35,6 +35,14 @@ class OurOptimizer(AbstractOptimizer):
         self.preprocessor_dict = self.build_preprocessor(api_config)
 
     def process(self, x):
+        """Function to process one point in the hyperparameter space.
+
+        Args:
+            x (dict): Dictionary with values of hyperparameters.
+
+        Returns:
+            List: List of processed values.
+        """        
         features = []
         for feature in self.api_config:
             feature_values = x[feature]
@@ -42,6 +50,14 @@ class OurOptimizer(AbstractOptimizer):
         return features
 
     def build_preprocessor(self, api_config):
+        """This function builds a dictionary of functions to process the hyperparameters.
+
+        Args:
+            api_config (dict): Dictionary with the configuration of the hyperparameters.
+
+        Returns:
+            dict: Dictionary with the functions to process the hyperparameters.
+        """        
         processing_dict = {}
         for feature in api_config:
             if api_config[feature]['type'] == 'bool':
@@ -69,16 +85,23 @@ class OurOptimizer(AbstractOptimizer):
         return processing_dict
 
     def categorical_processing(self, cats):
+        """This function returns a function to process categorical variables.
+
+        Args:
+            cats (list): List of possible values for the categorical variable.
+        """        
         def process(x):
             return cats.index(x)
         return process
     
     def min_max_processing(self, min_val, max_val):
+        """This function returns a function to process real variables."""
         def process(x):
             return (x - min_val) / (max_val - min_val)
         return process
     
     def log_min_max_processing(self, min_val, max_val):
+        """This function returns a function to process real variables in log scale."""
         def process(x):
             return (np.log10(x) - np.log10(min_val)) / (np.log10(max_val) - np.log10(min_val))
         return process
@@ -99,8 +122,8 @@ class OurOptimizer(AbstractOptimizer):
             corresponds to a parameter being optimized.
         """
         if len(self.X) > 0 and len(self.y) > 0:
-            # Sample new points using MCMC after at least one observation
-            next_guess = self.mcmc_sample(n_suggestions)
+            # Sample new points by maximizing the expected improvement
+            next_guess = self.max_sampling(n_suggestions)
         else:
             # Use a random initialization strategy for the first suggestion
             next_guess = rs.suggest_dict([], [], self.api_config, n_suggestions=n_suggestions,)
@@ -118,23 +141,42 @@ class OurOptimizer(AbstractOptimizer):
         y : array-like, shape (n,)
             Corresponding values where objective has been evaluated
         """
+        # Process the input points and store them
         X_p = np.array([self.process(x) for x in X])
+        # Store the input points and the corresponding values
         self.X = np.vstack((self.X, X_p))
         self.y = np.append(self.y, y)
 
         if self.X.shape[0] > 0 and self.y.shape[0] > 0:
+            # Fit a Gaussian Process model to the data
             self.meta_model.fit(self.X, self.y)
             
-    def mcmc_sample(self, n_suggestions):
-        N = 10
-        M = 1000
+    def max_sampling(self, n_suggestions):
+        N = 10 
+        M = 1000 # Number of random points to sample
+
+        # Sample M random points
         candidates = rs.suggest_dict([], [], self.api_config, n_suggestions=max(M, N*n_suggestions))
+
+        # Process the input points
         X = np.array([self.process(c) for c in candidates])
+
+        # Compute the expected improvement for each point
         ei_list = self.expected_improvement(X)
+
+        # Select the n_suggestions points with the highest expected improvement
         best = np.argsort(ei_list)[-n_suggestions:]
         return [candidates[i] for i in best]
 
-    def expected_improvement(self, X, xi=0.01):
+    def expected_improvement(self, X):
+        """Expected improvement according to the formula in the paper.
+
+        Args:
+            X (array): Array with the values
+
+        Returns:
+            array: Array with the expected improvement for each point.
+        """        
         mu, sigma = self.meta_model.predict(X, return_std=True)
         mu_sample = self.meta_model.predict(self.X)
 
